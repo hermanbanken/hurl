@@ -86,9 +86,9 @@ func main() {
 				log.Printf("stopping at line %d (start with 'hurl <file> <skip>' to resume): %s", linesProcessed, ctx.Err())
 				goto exit
 			case input <- text:
-				linesProcessed++
 			}
 		}
+		linesProcessed++
 	}
 exit:
 	readFile.Close()
