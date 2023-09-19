@@ -67,6 +67,10 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
+	defer close(input)
+	defer readFile.Close()
+	defer wg.Wait()
+
 	if len(os.Args) > 2 {
 		skip, _ = strconv.Atoi(os.Args[2])
 	}
@@ -84,17 +88,12 @@ func main() {
 			select {
 			case <-ctx.Done():
 				log.Printf("stopping at line %d (start with 'hurl <file> <skip>' to resume): %s", linesProcessed, ctx.Err())
-				goto exit
+				return
 			case input <- text:
 			}
 		}
 		linesProcessed++
 	}
-exit:
-	readFile.Close()
-	close(input)
-
-	wg.Wait()
 }
 
 func startWorker() {
