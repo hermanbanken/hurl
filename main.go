@@ -71,6 +71,9 @@ func main() {
 	}()
 
 	// read urls from input file
+	if len(os.Args) < 2 {
+		log.Fatal("missing input file; usage: hurl <url-list-file>")
+	}
 	readFile, err := os.Open(os.Args[1])
 	if err != nil {
 		log.Println(err)
