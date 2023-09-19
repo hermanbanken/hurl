@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ var (
 	wg            = sync.WaitGroup{}
 	perTryTimeout = 10 * time.Second
 	retries       = 3
+	skip          = 0
 )
 
 func main() {
@@ -54,6 +56,9 @@ func main() {
 		}
 	}()
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
 	// read urls from input file
 	if len(os.Args) < 2 {
 		log.Fatal("missing input file; usage: hurl <url-list-file>")
@@ -62,14 +67,30 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
+	if len(os.Args) > 2 {
+		skip, _ = strconv.Atoi(os.Args[2])
+	}
 	fileScanner := bufio.NewScanner(readFile)
 	fileScanner.Split(bufio.ScanLines)
+	linesProcessed := 0
 	for fileScanner.Scan() {
 		text := strings.TrimSpace(fileScanner.Text())
+		if skip > 0 {
+			skip--
+			linesProcessed++
+			continue
+		}
 		if text != "" {
-			input <- text
+			select {
+			case <-ctx.Done():
+				log.Printf("stopping at line %d (start with 'hurl <file> <skip>' to resume): %s", linesProcessed, ctx.Err())
+				goto exit
+			case input <- text:
+				linesProcessed++
+			}
 		}
 	}
+exit:
 	readFile.Close()
 	close(input)
 
