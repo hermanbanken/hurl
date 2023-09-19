@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
@@ -34,30 +35,25 @@ func main() {
 	parallelism.Store(1)
 	rate.Store(1)
 	workers.Store(0)
+	wg.Add(1)
 	go startWorker() // single worker to start
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	commands := make(chan string, 1)
 
 	// routine to change settings live
 	go func() {
 		inScanner := bufio.NewScanner(os.Stdin)
 		inScanner.Split(bufio.ScanLines)
 		for inScanner.Scan() {
-			text := strings.TrimSpace(inScanner.Text())
-			if true &&
-				// usage, to control parallelism, write: p=100
-				!setting("p", "parallelism", text, atomicIntSetting{parallelism}) &&
-				// usage, to control the max-rate per worker, set to 16/s, write: r=16
-				!setting("r", "rate", text, atomicIntSetting{rate}) &&
-				// usage, to control the per try timeout, write: t=10s
-				!setting("t", "timeout", text, durationSetting{&perTryTimeout}) &&
-				// usage, to control the retries, write: c=3
-				!setting("c", "retries", text, intSetting{&retries}) {
-				log.Println("unknown command", text)
+			if text := inScanner.Text(); text != "" {
+				commands <- strings.TrimSpace(text)
 			}
 		}
+		log.Println("stopped reading input", inScanner.Err())
 	}()
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
 
 	// read urls from input file
 	if len(os.Args) < 2 {
@@ -67,9 +63,7 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
-	defer close(input)
 	defer readFile.Close()
-	defer wg.Wait()
 
 	if len(os.Args) > 2 {
 		skip, _ = strconv.Atoi(os.Args[2])
@@ -79,25 +73,46 @@ func main() {
 	linesProcessed := 0
 	for fileScanner.Scan() {
 		text := strings.TrimSpace(fileScanner.Text())
+		line := linesProcessed
+		linesProcessed++
 		if skip > 0 {
 			skip--
-			linesProcessed++
 			continue
 		}
 		if text != "" {
 			select {
 			case <-ctx.Done():
-				log.Printf("stopping at line %d (start with 'hurl <file> <skip>' to resume): %s", linesProcessed, ctx.Err())
-				return
+				log.Printf("stopping at line %d (start with 'hurl <file> <skip>' to resume): %s", line, ctx.Err())
+				goto exit
+			case command := <-commands:
+				if true &&
+					// usage, to control parallelism, write: p=100
+					!setting("p", "parallelism", command, atomicIntSetting{parallelism}) &&
+					// usage, to control the max-rate per worker, set to 16/s, write: r=16
+					!setting("r", "rate", command, atomicIntSetting{rate}) &&
+					// usage, to control the per try timeout, write: t=10s
+					!setting("t", "timeout", command, durationSetting{&perTryTimeout}) &&
+					// usage, to control the retries, write: c=3
+					!setting("c", "retries", command, intSetting{&retries}) {
+					log.Println("unknown command", command)
+				} else {
+					current := workers.Load()
+					p := parallelism.Load()
+					for i := current; i < p; i++ {
+						wg.Add(1)
+						go startWorker()
+					}
+				}
 			case input <- text:
 			}
 		}
-		linesProcessed++
 	}
+exit:
+	close(input)
+	wg.Wait()
 }
 
 func startWorker() {
-	wg.Add(1)
 	defer wg.Done()
 	idx := workers.Add(1) - 1
 	defer func() {
